@@ -209,6 +209,11 @@ static void sugov_get_util(unsigned long *util, unsigned long *max, int cpu)
 	*max = cfs_max;
 
 	*util = boosted_cpu_util(cpu, &loadcpu->walt_load);
+	
+#ifdef CONFIG_UCLAMP_TASK
+	*util = uclamp_rq_util_with(rq, *util, NULL);
+	*util = min(*max, *util);
+#endif
 }
 
 static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
@@ -809,33 +814,6 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->down_rate_limit_us = tunables->down_rate_limit_us;
 }
 
-static void sugov_tunables_save(struct cpufreq_policy *policy,
-		struct sugov_tunables *tunables)
-		static void sugov_clear_global_tunables(void)
-{
-	int cpu;
-	struct sugov_tunables *cached = per_cpu(cached_tunables, policy->cpu);
-
-	if (!have_governor_per_policy())
-		return;
-
-	if (!cached) {
-		cached = kzalloc(sizeof(*tunables), GFP_KERNEL);
-		if (!cached) {
-			pr_warn("Couldn't allocate tunables for caching\n");
-			return;
-		}
-		for_each_cpu(cpu, policy->related_cpus)
-			per_cpu(cached_tunables, cpu) = cached;
-	}
-
-	cached->pl = tunables->pl;
-	cached->hispeed_load = tunables->hispeed_load;
-	cached->hispeed_freq = tunables->hispeed_freq;
-	cached->up_rate_limit_us = tunables->up_rate_limit_us;
-	cached->down_rate_limit_us = tunables->down_rate_limit_us;
-}
-
 static void sugov_clear_global_tunables(void)
 {
 	if (!have_governor_per_policy())
@@ -955,8 +933,10 @@ static void sugov_exit(struct cpufreq_policy *policy)
 
 	count = gov_attr_set_put(&tunables->attr_set, &sg_policy->tunables_hook);
 	policy->governor_data = NULL;
-	if (!count)
+	if (!count) {
+		sugov_tunables_save(policy, tunables);
 		sugov_clear_global_tunables();
+	}
 
 	mutex_unlock(&global_tunables_lock);
 
